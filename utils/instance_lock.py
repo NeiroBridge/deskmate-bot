@@ -18,6 +18,29 @@ def _is_pid_running(pid: int) -> bool:
     return True
 
 
+def _lock_exclusive(file_obj) -> None:
+    """Non-blocking exclusive lock (Windows msvcrt / Unix fcntl)."""
+    if os.name == "nt":
+        import msvcrt
+
+        msvcrt.locking(file_obj.fileno(), msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(file_obj.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def _unlock(file_obj) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        msvcrt.locking(file_obj.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(file_obj.fileno(), fcntl.LOCK_UN)
+
+
 def acquire_instance_lock() -> None:
     """Exit if another bot instance is already running."""
     global _lock_file
@@ -29,23 +52,21 @@ def acquire_instance_lock() -> None:
             old_pid = None
         if old_pid and _is_pid_running(old_pid):
             logger.error(
-                "Bot is already running in another window. "
-                "Stop it with Ctrl+C or run run.bat"
+                "Bot is already running in another process. "
+                "Stop it (Ctrl+C / kill) before starting a new one."
             )
             sys.exit(1)
         LOCK_PATH.unlink(missing_ok=True)
-
-    import msvcrt
 
     LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
     _lock_file = open(LOCK_PATH, "w", encoding="utf-8")
 
     try:
-        msvcrt.locking(_lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+        _lock_exclusive(_lock_file)
     except OSError:
         logger.error(
-            "Bot is already running in another window. "
-            "Stop it with Ctrl+C or run run.bat"
+            "Bot is already running in another process. "
+            "Stop it (Ctrl+C / kill) before starting a new one."
         )
         sys.exit(1)
 
@@ -59,8 +80,7 @@ def release_instance_lock() -> None:
 
     if _lock_file is not None:
         try:
-            import msvcrt
-            msvcrt.locking(_lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            _unlock(_lock_file)
             _lock_file.close()
         except OSError:
             pass

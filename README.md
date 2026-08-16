@@ -1,6 +1,20 @@
 # DeskMate — мультимодальный Telegram-ассистент
 
-Ops-ассистент для студии [NeiroBridge](https://neirobridge.ru): текст, голос, RAG, Vision и генерация изображений.
+Ops-ассистент студии [NeiroBridge](https://neirobridge.ru): текст, голос, RAG, Vision, генерация изображений.
+
+## Бизнес-ценность и метрики
+
+DeskMate отвечает по базе знаний компании и обычным запросам в Telegram.  
+Для урока PEcf09 добавлены **логирование взаимодействий** и **кэш ответов**:
+
+| Метрика | Зачем |
+|--------|--------|
+| Время ответа (мс) | Видно, где тормозит STT / RAG / LLM |
+| Доля ответов из кэша | Экономия API и быстрее повторные вопросы |
+| Число запросов / 24ч | Нагрузка и популярные сценарии |
+
+Цифры смотрите командой `/stats` после реальных запросов к боту (на сервере или локально).  
+Хранение: SQLite `data/logs.db` (без телефонов и ФИО — только `user_id`).
 
 ## Возможности
 
@@ -8,13 +22,15 @@ Ops-ассистент для студии [NeiroBridge](https://neirobridge.ru)
 - **RAG** — ответы из базы знаний (ChromaDB) с указанием источника
 - **Голос** — Whisper (STT) + TTS (режим `/mode voice`)
 - **Vision** — анализ фото и скриншотов (GPT-4o Vision)
-- **Генерация изображений** — gpt-image-1 через ProxyAPI (команда `/image` или «Нарисуй…»)
+- **Генерация изображений** — gpt-image-1 через ProxyAPI
+- **Метрики** — SQLite-логи + кэш + `/stats`
 
 ## Стек
 
 - Python 3.10+, pyTelegramBotAPI
-- OpenAI через [ProxyAPI](https://proxyapi.ru) (GPT-4o, Whisper, TTS, Vision, gpt-image-1)
+- OpenAI через [ProxyAPI](https://proxyapi.ru)
 - LangChain + ChromaDB (RAG)
+- SQLite (`utils/db_logger.py`) + JSON-кэш (`utils/response_cache.py`)
 - Cloudflare Worker — прокси Telegram Bot API для РФ
 
 ## Быстрый старт
@@ -41,8 +57,7 @@ python main.py
 
 ### Cloudflare Worker
 
-Код прокси: [`cloudflare/telegram-proxy.js`](cloudflare/telegram-proxy.js).  
-Разверните в Cloudflare Workers и укажите URL в `TELEGRAM_API_URL`.
+Код прокси: [`cloudflare/telegram-proxy.js`](cloudflare/telegram-proxy.js).
 
 ## Команды бота
 
@@ -50,9 +65,27 @@ python main.py
 |---------|----------|
 | `/start` | Приветствие |
 | `/mode text\|voice\|rag` | Режим работы |
-| `/stats` | Статус базы знаний RAG |
+| `/stats` | RAG + метрики (время, кэш, объём запросов) |
 | `/image <описание>` | Генерация изображения |
 | `/reset` | Сброс истории диалога |
+
+## Метрики и логирование
+
+Пайплайн лога (как на уроке):
+
+1. Пользователь отправляет запрос  
+2. Проверка кэша → при попадании ответ сразу, `from_cache=1`  
+3. Иначе RAG/LLM → ответ  
+4. Запись в SQLite: query, response, user_id, mode, response_time_ms, from_cache  
+
+Экспорт CSV (на сервере/локально из Python):
+
+```python
+from utils.db_logger import db_logger
+print(db_logger.export_csv())
+```
+
+`data/logs.db` и `data/response_cache.json` в git не попадают.
 
 ## Структура проекта
 
@@ -60,7 +93,7 @@ python main.py
 handlers/     — команды и входящие сообщения
 services/     — OpenAI, router, STT/TTS, Vision, image generation
 rag/          — индексация и поиск в ChromaDB
-utils/        — логи, сессии, Telegram API helpers
+utils/        — логи, SQLite-метрики, кэш, сессии
 data/documents/ — файлы базы знаний (txt)
 cloudflare/   — Worker для Telegram API
 ```
@@ -68,20 +101,32 @@ cloudflare/   — Worker для Telegram API
 ## Пайплайн
 
 ```
-Пользователь (Telegram) -> Cloudflare Worker -> handlers/ -> router.py
-  -> ProxyAPI (GPT-4o / Whisper / TTS / Vision / gpt-image-1) + ChromaDB (RAG)
+Пользователь (Telegram) -> Cloudflare Worker -> handlers/
+  -> кэш? -> ProxyAPI / ChromaDB
+  -> SQLite log (время, кэш)
   -> ответ в Telegram
 ```
 
 ## База знаний RAG
 
-Файлы в `data/documents/` индексируются при старте. Пример: `product_guide.txt`, `pricing_and_offers.txt`, `integrations_workflows.txt`.
-
+Файлы в `data/documents/` индексируются при старте.  
 Режим: `/mode rag`
+
+## Деплой на VPS (кратко)
+
+```bash
+cd /opt/deskmate-bot   # или git clone
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+nano .env
+screen -S deskmate
+python main.py
+```
 
 ## Ограничения (РФ + Telegram)
 
-Прямой доступ к `api.telegram.org` из России ограничен. Проект использует Cloudflare Worker как reverse proxy. Текст, RAG и Vision работают стабильно; загрузка медиа (`sendVoice`, `sendPhoto`) через прокси может падать по таймауту — это инфраструктурное ограничение, не ошибка бизнес-логики.
+Прямой доступ к `api.telegram.org` из России ограничен. Используется Cloudflare Worker.  
+Медиа через прокси может падать по таймауту — инфраструктурное ограничение.
 
 ## Лицензия
 
@@ -89,4 +134,5 @@ MIT
 
 ---
 
-**Репозиторий:** https://github.com/bazhen82/deskmate-bot
+**Репозиторий:** https://github.com/NeiroBridge/deskmate-bot  
+**Сайт:** https://neirobridge.ru

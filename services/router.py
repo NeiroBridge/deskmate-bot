@@ -13,6 +13,7 @@ from services.vision import analyze_image
 from services.image_generation import detect_image_generation_intent, generate_image
 from utils.logging import logger
 from utils.helpers import user_sessions
+from utils.response_cache import response_cache
 from config import BotMode, DALLE_DEFAULT_SIZE, DALLE_DEFAULT_QUALITY
 
 
@@ -51,6 +52,20 @@ async def route_text_request(
                     prompt=image_intent.get('prompt', text),
                     original_text=text
                 )
+
+        # Cache only plain text / RAG answers (not image generation)
+        if mode in (BotMode.TEXT, BotMode.RAG, BotMode.VOICE):
+            cache_mode = BotMode.RAG if mode == BotMode.RAG else BotMode.TEXT
+            cached = response_cache.get(text, cache_mode)
+            if cached:
+                user_sessions.add_message(user_id, "user", text)
+                user_sessions.add_message(user_id, "assistant", cached)
+                logger.info(f"Cache hit for user {user_id} mode={cache_mode}")
+                return {
+                    "text": cached,
+                    "mode": mode,
+                    "from_cache": True,
+                }
         
         # Add user message to history
         user_sessions.add_message(user_id, "user", text)
@@ -67,18 +82,24 @@ async def route_text_request(
         
         # Add assistant response to history
         user_sessions.add_message(user_id, "assistant", response_text)
+
+        cache_mode = BotMode.RAG if mode == BotMode.RAG else BotMode.TEXT
+        if mode in (BotMode.TEXT, BotMode.RAG, BotMode.VOICE) and response_text:
+            response_cache.set(text, cache_mode, response_text)
         
         logger.info(f"Text request processed for user {user_id}")
         return {
             "text": response_text,
-            "mode": mode
+            "mode": mode,
+            "from_cache": False,
         }
         
     except Exception as e:
         logger.error(f"Error routing text request: {e}")
         return {
             "text": "Извините, произошла ошибка при обработке запроса.",
-            "error": str(e)
+            "error": str(e),
+            "from_cache": False,
         }
 
 
@@ -115,7 +136,8 @@ async def route_voice_request(
                 "has_image": True,
                 "image_path": text_response.get("image_path"),
                 "revised_prompt": text_response.get("revised_prompt"),
-                "voice_path": None
+                "voice_path": None,
+                "from_cache": bool(text_response.get("from_cache")),
             }
         
         # In RAG mode — text answer only (faster, fewer API calls)
@@ -127,6 +149,7 @@ async def route_voice_request(
                 "transcription": transcription,
                 "voice_path": None,
                 "has_image": False,
+                "from_cache": bool(text_response.get("from_cache")),
             }
         
         # Generate voice response for normal text
@@ -142,14 +165,16 @@ async def route_voice_request(
             "text": text_response["text"],
             "transcription": transcription,
             "voice_path": voice_response_path,
-            "has_image": False
+            "has_image": False,
+            "from_cache": bool(text_response.get("from_cache")),
         }
         
     except Exception as e:
         logger.error(f"Error routing voice request: {e}")
         return {
             "text": "Извините, произошла ошибка при обработке голосового сообщения.",
-            "error": str(e)
+            "error": str(e),
+            "from_cache": False,
         }
 
 

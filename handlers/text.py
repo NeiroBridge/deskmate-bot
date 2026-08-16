@@ -3,26 +3,43 @@ Text Message Handler.
 Handles regular text messages from users using pyTelegramBotAPI.
 """
 
+import time
+
 from telebot import types
 from bot import bot
 from services.router import route_text_request
 from utils.logging import logger
 from utils.helpers import user_sessions, safe_chat_action
+from utils.db_logger import db_logger
 from config import BotMode
+
+
+def _log_text_interaction(message: types.Message, query: str, response: dict, elapsed_ms: int) -> None:
+    try:
+        db_logger.log_interaction(
+            query=query,
+            response=response.get("text") or "",
+            source="telegram",
+            user_id=str(message.from_user.id),
+            username=message.from_user.username,
+            from_cache=bool(response.get("from_cache")),
+            response_time_ms=elapsed_ms,
+            mode=response.get("mode") or user_sessions.get_mode(message.from_user.id),
+        )
+    except Exception as log_err:
+        logger.error(f"Failed to write metrics log: {log_err}")
 
 
 @bot.message_handler(commands=['mode'])
 async def cmd_mode(message: types.Message):
     """Handle /mode command - change bot mode."""
     user_id = message.from_user.id
-    
-    # Parse command arguments
+
     args = message.text.split(maxsplit=1)
-    
+
     if len(args) < 2:
-        # Show current mode and available modes
         current_mode = user_sessions.get_mode(user_id)
-        
+
         mode_info = f"""🔧 **Текущий режим:** `{current_mode}`
 
 **Доступные режимы:**
@@ -42,14 +59,13 @@ async def cmd_mode(message: types.Message):
 **Примеры:**
 /mode text
 /mode rag"""
-        
+
         await bot.send_message(message.chat.id, mode_info)
         return
-    
-    # Set new mode
+
     new_mode = args[1].lower()
     valid_modes = [BotMode.TEXT, BotMode.VOICE, BotMode.VISION, BotMode.RAG]
-    
+
     if new_mode not in valid_modes:
         await bot.send_message(
             message.chat.id,
@@ -57,17 +73,17 @@ async def cmd_mode(message: types.Message):
             f"Доступные режимы: {', '.join(valid_modes)}"
         )
         return
-    
+
     user_sessions.set_mode(user_id, new_mode)
     logger.info(f"User {user_id} switched to mode: {new_mode}")
-    
+
     mode_descriptions = {
         BotMode.TEXT: "📝 Текстовый режим - обычный диалог с GPT-4o",
         BotMode.VOICE: "🎤 Голосовой режим - ответы будут приходить голосом",
         BotMode.VISION: "📸 Режим Vision - отправляйте изображения для анализа",
         BotMode.RAG: "📚 Режим RAG - работа с базой знаний"
     }
-    
+
     await bot.send_message(
         message.chat.id,
         f"✅ Режим изменен!\n\n{mode_descriptions[new_mode]}"
@@ -78,10 +94,9 @@ async def cmd_mode(message: types.Message):
 async def cmd_image(message: types.Message):
     """Handle /image command - generate image with specific parameters."""
     user_id = message.from_user.id
-    
-    # Parse command arguments
+
     args = message.text.split(maxsplit=1)
-    
+
     if len(args) < 2:
         help_text = """🎨 **Генерация изображений**
 
@@ -97,36 +112,32 @@ async def cmd_image(message: types.Message):
 /image <описание>
 
 Бот использует DALL-E 3 для создания изображений высокого качества."""
-        
+
         await bot.send_message(message.chat.id, help_text)
         return
-    
+
     prompt = args[1]
-    
+
     logger.info(f"Direct image generation request from user {user_id}")
-    
-    # Show typing indicator
+
     await safe_chat_action(bot, message.chat.id, 'typing')
-    
+
     try:
-        # Generate image directly
         from services.router import route_image_generation_request
         from utils.helpers import cleanup_file
-        
+
         response = await route_image_generation_request(
             user_id=user_id,
             prompt=prompt,
             original_text=prompt,
             quality="low",
         )
-        
-        # Send text response
+
         await bot.send_message(message.chat.id, response["text"])
-        
-        # Send image if generated successfully
+
         if response.get('has_image') and response.get('image_path'):
             await safe_chat_action(bot, message.chat.id, 'upload_photo')
-            
+
             image_path = response['image_path']
             from utils.telegram_files import send_photo_safe
             try:
@@ -141,7 +152,7 @@ async def cmd_image(message: types.Message):
                 logger.info(f"Image sent to user {user_id} (/image)")
             finally:
                 cleanup_file(image_path)
-    
+
     except Exception as e:
         logger.error(f"Error in /image command: {e}", exc_info=True)
         await bot.send_message(
@@ -156,22 +167,22 @@ async def handle_text_message(message: types.Message):
     """Handle regular text messages."""
     user_id = message.from_user.id
     text = message.text
-    
+
     logger.info(f"Text message from user {user_id}: {text[:50]}...")
-    
+
     mode = user_sessions.get_mode(user_id)
-    
-    # Show typing indicator
+
     await safe_chat_action(bot, message.chat.id, 'typing')
-    
+
+    started = time.perf_counter()
     try:
         if mode == BotMode.RAG:
             await bot.send_message(message.chat.id, "📚 Ищу в базе знаний...")
-        
-        # Route request
+
         response = await route_text_request(user_id, text)
-        
-        # Check if response contains an image
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        _log_text_interaction(message, text, response, elapsed_ms)
+
         if response.get('has_image') and response.get('image_path'):
             from utils.helpers import cleanup_file
             from utils.telegram_files import send_message_safe, send_photo_safe
@@ -201,17 +212,17 @@ async def handle_text_message(message: types.Message):
                 cleanup_file(image_path)
 
             return
-        
+
         if mode == BotMode.VOICE:
             from services.tts import generate_voice_response
             from utils.helpers import cleanup_file
             from utils.telegram_files import send_message_safe, send_voice_safe
-            
+
             voice_path = await generate_voice_response(
                 response["text"],
                 voice=user_sessions.get_voice(user_id)
             )
-            
+
             try:
                 await send_message_safe(message.chat.id, response["text"])
                 try:
@@ -225,9 +236,8 @@ async def handle_text_message(message: types.Message):
             finally:
                 cleanup_file(voice_path)
         else:
-            # Send text response
             await bot.send_message(message.chat.id, response["text"])
-    
+
     except Exception as e:
         logger.error(f"Error handling text message: {e}", exc_info=True)
         await bot.send_message(

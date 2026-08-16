@@ -49,6 +49,10 @@ data/documents/*
 
 # Logs
 *.log
+data/logs.db
+data/response_cache.json
+logs_export.csv
+logs.db
 
 # OS
 .DS_Store

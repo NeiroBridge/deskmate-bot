@@ -90,7 +90,7 @@ async def cmd_help(message: types.Message):
   • shimmer - теплый женский
 
 /reset - очистить историю диалога
-/stats - статистика базы знаний
+/stats - статистика RAG и метрики (время ответа, кэш)
 /voices - список доступных голосов
 
 **💡 Примеры использования:**
@@ -129,43 +129,58 @@ async def cmd_reset(message: types.Message):
 
 @bot.message_handler(commands=['stats'])
 async def cmd_stats(message: types.Message):
-    """Handle /stats command - show knowledge base statistics."""
+    """Handle /stats — RAG index + interaction metrics."""
     user_id = message.from_user.id
     logger.info(f"User {user_id} requested stats")
-    
+
+    rag_block = "⚠️ База знаний недоступна."
     try:
         from rag.query import get_knowledge_base_stats
-        
+
         stats = get_knowledge_base_stats()
-        
         if "error" in stats:
-            await bot.send_message(
-                message.chat.id,
-                f"⚠️ Ошибка получения статистики:\n{stats['error']}"
+            rag_block = f"⚠️ RAG: {stats['error']}"
+        else:
+            total_docs = stats.get("total_documents", 0)
+            persist_dir = stats.get("persist_directory", "N/A")
+            status = (
+                "✅ База знаний готова"
+                if total_docs > 0
+                else "⚠️ База пуста — добавьте файлы в data/documents/"
             )
-            return
-        
-        total_docs = stats.get("total_documents", 0)
-        persist_dir = stats.get("persist_directory", "N/A")
-        
-        status = (
-            "✅ База знаний готова к использованию!"
-            if total_docs > 0
-            else "⚠️ База знаний пуста. Добавьте документы в data/documents/"
-        )
-        stats_text = (
-            f"📊 Статистика базы знаний\n\n"
-            f"📄 Фрагментов в индексе: {total_docs}\n"
-            f"💾 Директория: {persist_dir}\n\n"
-            f"{status}\n\n"
-            f"Для вопросов по документам: /mode rag"
-        )
-        
-        await bot.send_message(message.chat.id, stats_text)
-        
+            rag_block = (
+                f"📚 База знаний (RAG)\n"
+                f"• Фрагментов в индексе: {total_docs}\n"
+                f"• Директория: {persist_dir}\n"
+                f"• {status}"
+            )
     except Exception as e:
-        logger.error(f"Error getting stats: {e}")
-        await bot.send_message(
-            message.chat.id,
-            "⚠️ Ошибка получения статистики базы знаний."
+        logger.error(f"Error getting RAG stats: {e}")
+        rag_block = "⚠️ Ошибка статистики базы знаний."
+
+    metrics_block = "⚠️ Метрики взаимодействий недоступны."
+    try:
+        from utils.db_logger import db_logger
+        from utils.response_cache import response_cache
+
+        m = db_logger.get_stats(hours=24)
+        avg = m["avg_response_time_ms"]
+        median = m["median_response_time_ms"]
+        metrics_block = (
+            f"📈 Метрики ассистента\n"
+            f"• Всего запросов: {m['total_requests']}\n"
+            f"• За последние {m['hours_window']} ч: {m['requests_last_hours']}\n"
+            f"• Из кэша: {m['cached_requests']} ({m['cache_hit_rate_pct']}%)\n"
+            f"• Среднее время ответа: {avg if avg is not None else '—'} мс\n"
+            f"• Медиана времени: {median if median is not None else '—'} мс\n"
+            f"• Записей в кэше: {response_cache.size()}\n"
+            f"• Логи: {m['db_path']}"
         )
+    except Exception as e:
+        logger.error(f"Error getting interaction metrics: {e}")
+
+    await bot.send_message(
+        message.chat.id,
+        f"📊 Статистика DeskMate\n\n{rag_block}\n\n{metrics_block}\n\n"
+        f"Для вопросов по документам: /mode rag",
+    )

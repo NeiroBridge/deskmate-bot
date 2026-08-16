@@ -3,6 +3,8 @@ Voice Message Handler.
 Handles voice messages with STT and TTS using pyTelegramBotAPI.
 """
 
+import time
+
 from telebot import types
 from bot import bot
 from services.router import route_voice_request
@@ -10,6 +12,7 @@ from services.tts import get_available_voices, get_voice_info
 from utils.logging import logger
 from utils.helpers import user_sessions, save_file_async, cleanup_files, safe_chat_action
 from utils.telegram_files import download_telegram_file, send_message_safe, send_voice_safe
+from utils.db_logger import db_logger
 from config import VoiceType
 
 
@@ -93,7 +96,8 @@ async def handle_voice_message(message: types.Message):
     voice_file_path = None
     audio_response_path = None
     image_path = None
-    
+
+    started = time.perf_counter()
     try:
         await send_message_safe(message.chat.id, "🎤 Обрабатываю голосовое...")
         
@@ -104,6 +108,21 @@ async def handle_voice_message(message: types.Message):
         logger.info(f"Voice file saved: {voice_file_path}")
         
         response = await route_voice_request(user_id, voice_file_path)
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+
+        try:
+            db_logger.log_interaction(
+                query=response.get("transcription") or "[voice]",
+                response=response.get("text") or "",
+                source="telegram_voice",
+                user_id=str(user_id),
+                username=message.from_user.username,
+                from_cache=bool(response.get("from_cache")),
+                response_time_ms=elapsed_ms,
+                mode=user_sessions.get_mode(user_id),
+            )
+        except Exception as log_err:
+            logger.error(f"Failed to write voice metrics log: {log_err}")
         
         await send_message_safe(
             message.chat.id,

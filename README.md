@@ -1,6 +1,6 @@
 # DeskMate — мультимодальный Telegram-ассистент
 
-![DeskMate cover](docs/cover.png)
+![DeskMate cover](docs/cover.jpg)
 
 Ops-ассистент студии [NeiroBridge](https://neirobridge.ru): ответы по базе знаний, голос, Vision и генерация изображений в Telegram.
 
